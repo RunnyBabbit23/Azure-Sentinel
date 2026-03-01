@@ -1,0 +1,78 @@
+id: 0716accd-d9f3-4958-b76e-a391cc40da7c
+name: Claude AI - Code CLI Execution via WSL
+description: |
+  Detects execution of the Claude Code CLI (claude-code) within Windows Subsystem for Linux (WSL)
+  on a Windows machine. Claude Code is an AI coding assistant developed by Anthropic that, when run
+  in WSL, has access to local filesystems and can send code context to the Anthropic API
+  (api.anthropic.com). This query identifies users running Claude Code via WSL, which may indicate
+  unauthorized use of AI tooling, potential data exfiltration risk (sensitive code sent to a cloud AI
+  provider), or shadow IT activity that bypasses organizational AI governance policies.
+  Recommended Action: Confirm with the user whether Claude Code usage is authorized. Review which
+  repositories or codebases are being accessed. Ensure activity complies with organizational AI usage
+  and data-handling policies.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceProcessEvents
+tactics:
+  - Execution
+  - Collection
+relevantTechniques:
+  - T1059.004
+  - T1005
+query: |
+  DeviceProcessEvents
+  | where TimeGenerated > ago(7d)
+  | where (
+      // Direct claude binary execution inside WSL
+      FileName =~ "claude"
+      // Node.js running the claude-code package
+      or (FileName =~ "node" and ProcessCommandLine has_any (
+          "claude-code", "@anthropic-ai/claude-code", "/claude/cli", "claude/dist/cli"))
+      // wsl.exe on the Windows side launching claude directly
+      or (FileName =~ "wsl.exe" and ProcessCommandLine has_any ("claude", "claude-code"))
+  )
+  | where (
+      // WSL virtual filesystem paths visible from Windows
+      FolderPath has "\\wsl$\\" or FolderPath has "\\wsl.localhost\\"
+      // Linux-style paths captured by MDE inside WSL2
+      or FolderPath startswith "/usr/local/bin" or FolderPath startswith "/home/"
+      // wsl.exe as the initiating (parent) process
+      or InitiatingProcessFileName =~ "wsl.exe"
+      // npm global module paths common for claude-code installs
+      or ProcessCommandLine has "/usr/local/lib/node_modules"
+  )
+  | extend WSLDistro = extract(@"\\wsl[^\\]*\\([^\\]+)\\", 1, FolderPath)
+  | project
+      TimeGenerated,
+      DeviceName,
+      AccountName,
+      FileName,
+      ProcessCommandLine,
+      InitiatingProcessFileName,
+      InitiatingProcessCommandLine,
+      FolderPath,
+      WSLDistro
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: AccountName
+  - entityType: Process
+    fieldMappings:
+      - identifier: CommandLine
+        columnName: ProcessCommandLine
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Threat Protection", "Security - Others" ]

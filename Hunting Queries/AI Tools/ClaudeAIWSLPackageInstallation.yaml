@@ -1,0 +1,75 @@
+id: 6cfcb94f-3a55-4f82-bb6a-484d78ba005e
+name: Claude AI - Package Installation via WSL Package Manager
+description: |
+  Detects installation of Claude AI packages (claude-code, @anthropic-ai/claude-code) or the
+  Anthropic SDK via package managers (npm, pip, pip3, pipx) within Windows Subsystem for Linux (WSL).
+  This activity indicates a user is actively setting up Claude AI tooling within a WSL environment.
+  First-time or unexpected installations may represent unauthorized AI tool deployment on corporate
+  devices or shadow IT activity bypassing software approval processes.
+  Recommended Action: Confirm with the user whether the installation is authorized. Review
+  organizational AI usage and software procurement policies. Determine whether the installed tools
+  require a security review before use.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceProcessEvents
+tactics:
+  - Execution
+relevantTechniques:
+  - T1059.004
+  - T1072
+query: |
+  DeviceProcessEvents
+  | where TimeGenerated > ago(7d)
+  | where (
+      // npm/yarn/pnpm installing anthropic/claude packages
+      (ProcessCommandLine has_any ("npm install", "npm i ", "npm add", "yarn add", "pnpm add")
+          and ProcessCommandLine has_any ("claude-code", "@anthropic-ai", "anthropic"))
+      // pip/pip3/pipx installing anthropic SDK
+      or (ProcessCommandLine has_any ("pip install", "pip3 install", "pipx install")
+          and ProcessCommandLine has "anthropic")
+  )
+  | where (
+      // WSL virtual filesystem paths visible from Windows
+      FolderPath has "\\wsl$\\" or FolderPath has "\\wsl.localhost\\"
+      // Linux-style paths captured inside WSL2
+      or FolderPath startswith "/usr/" or FolderPath startswith "/home/"
+      // wsl.exe as parent or standard WSL shells as initiating process
+      or InitiatingProcessFileName =~ "wsl.exe"
+      or InitiatingProcessFileName in~ ("bash", "sh", "zsh", "fish")
+  )
+  | extend PackageName = extract(@"(?:install|add|i )\s+([-\w@/.]+)", 1, ProcessCommandLine)
+  | extend WSLDistro = extract(@"\\wsl[^\\]*\\([^\\]+)\\", 1, FolderPath)
+  | project
+      TimeGenerated,
+      DeviceName,
+      AccountName,
+      FileName,
+      ProcessCommandLine,
+      PackageName,
+      InitiatingProcessFileName,
+      FolderPath,
+      WSLDistro
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: AccountName
+  - entityType: Process
+    fieldMappings:
+      - identifier: CommandLine
+        columnName: ProcessCommandLine
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Threat Protection", "Security - Others" ]

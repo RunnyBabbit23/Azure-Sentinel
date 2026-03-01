@@ -1,0 +1,81 @@
+id: 55bec562-a7ed-4770-ac0e-7bc8d2e806a4
+name: Claude AI - Configuration Files Detected in WSL Filesystem
+description: |
+  Detects creation or modification of Claude AI configuration files within the WSL filesystem as
+  observed from the Windows host via DeviceFileEvents. Key files include .claude.json (which may
+  store Anthropic API keys and authentication tokens), the ~/.claude/ directory (which stores
+  conversation history, project context, and settings), and per-project CLAUDE.md instruction files.
+  The presence of these files confirms active Claude AI usage within WSL and highlights potential
+  credential exposure or sensitive project data being processed by an external AI service.
+  Recommended Action: Investigate whether Claude usage is authorized. If .claude.json is present,
+  assess the risk of API key exposure on a corporate device. Review CLAUDE.md files for any
+  sensitive system prompts or data included in AI sessions.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceFileEvents
+tactics:
+  - Collection
+  - Persistence
+relevantTechniques:
+  - T1005
+  - T1552.001
+query: |
+  DeviceFileEvents
+  | where TimeGenerated > ago(7d)
+  | where (
+      // API key and auth config file
+      FileName =~ ".claude.json"
+      // Claude settings, history, and project context directory
+      or FolderPath has "\\.claude\\"
+      // Per-project AI instruction files
+      or FileName =~ "CLAUDE.md"
+  )
+  | where (
+      // WSL virtual filesystem paths visible from Windows
+      FolderPath has "\\wsl$\\" or FolderPath has "\\wsl.localhost\\"
+      // Linux home directory paths captured inside WSL2
+      or (FolderPath startswith "/home/" and (FolderPath has ".claude" or FileName =~ "CLAUDE.md"))
+  )
+  | extend FileRisk = case(
+      FileName =~ ".claude.json",                     "High - Potential API Key / Auth Token Storage",
+      FolderPath has "\\.claude\\projects\\",          "Medium - Project History and Context",
+      FolderPath has "\\.claude\\todos\\",             "Low - Task Tracking Data",
+      FileName =~ "CLAUDE.md",                         "Medium - AI System Prompt / Instructions",
+                                                       "Medium - Claude Configuration"
+  )
+  | extend WSLDistro = extract(@"\\wsl[^\\]*\\([^\\]+)\\", 1, FolderPath)
+  | project
+      TimeGenerated,
+      DeviceName,
+      AccountName,
+      ActionType,
+      FileName,
+      FolderPath,
+      FileRisk,
+      WSLDistro,
+      InitiatingProcessFileName,
+      InitiatingProcessCommandLine
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: AccountName
+  - entityType: File
+    fieldMappings:
+      - identifier: Name
+        columnName: FileName
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Threat Protection", "Security - Others" ]

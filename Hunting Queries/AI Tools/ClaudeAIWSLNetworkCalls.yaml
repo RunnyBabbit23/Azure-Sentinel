@@ -1,0 +1,77 @@
+id: 8cb293f5-db1f-4c79-af6b-c26094c70d60
+name: Claude AI - Anthropic API Calls from WSL Process
+description: |
+  Detects outbound network connections to the Anthropic API (api.anthropic.com) initiated by processes
+  running within Windows Subsystem for Linux (WSL). These connections indicate that Claude AI tools
+  (such as the Claude Code CLI or custom scripts using the Anthropic Python/Node SDK) are actively
+  communicating with Anthropic's cloud services from a WSL environment. This activity may represent
+  unauthorized AI tool usage, exfiltration of sensitive source code or data to a third-party AI
+  provider, or shadow IT activity that circumvents organizational AI governance controls.
+  Recommended Action: Identify the initiating process and user. Confirm whether Claude or other
+  Anthropic AI tools are approved for use on the device. Review organizational data classification
+  policies to assess whether sensitive data may have been submitted to the Anthropic API.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceNetworkEvents
+tactics:
+  - Exfiltration
+  - Execution
+relevantTechniques:
+  - T1048.002
+  - T1059.004
+query: |
+  DeviceNetworkEvents
+  | where TimeGenerated > ago(7d)
+  | where RemoteUrl has "anthropic.com"
+  | where (
+      // Connections from processes running inside WSL (filesystem paths)
+      InitiatingProcessFolderPath has "\\wsl$\\" or InitiatingProcessFolderPath has "\\wsl.localhost\\"
+      // Linux-style paths captured by MDE inside WSL2
+      or InitiatingProcessFolderPath startswith "/usr/" or InitiatingProcessFolderPath startswith "/home/"
+      // wsl.exe bridging network traffic on behalf of a WSL process
+      or InitiatingProcessFileName =~ "wsl.exe"
+      // Node.js process with claude/anthropic in its command line (WSL-launched)
+      or (InitiatingProcessFileName =~ "node"
+          and InitiatingProcessCommandLine has_any ("claude", "anthropic", "@anthropic-ai"))
+  )
+  | extend WSLDistro = extract(@"\\wsl[^\\]*\\([^\\]+)\\", 1, InitiatingProcessFolderPath)
+  | project
+      TimeGenerated,
+      DeviceName,
+      AccountName,
+      ActionType,
+      RemoteUrl,
+      RemoteIP,
+      RemotePort,
+      InitiatingProcessFileName,
+      InitiatingProcessCommandLine,
+      InitiatingProcessFolderPath,
+      WSLDistro
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: AccountName
+  - entityType: URL
+    fieldMappings:
+      - identifier: Url
+        columnName: RemoteUrl
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: RemoteIP
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Threat Protection", "Security - Others" ]
