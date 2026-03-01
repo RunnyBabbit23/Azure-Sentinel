@@ -1,0 +1,81 @@
+id: 70809ab4-2882-4b61-9272-27e032d58db1
+name: KEV - Unpatched Known Exploited Vulnerabilities Older Than 30 Days (Watchlist)
+description: |
+  Identifies devices in the environment that have unpatched vulnerabilities listed in the CISA Known
+  Exploited Vulnerabilities (KEV) catalog where the vulnerability was added to the KEV catalog more
+  than 30 days ago. CISA's KEV catalog (https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+  tracks actively exploited vulnerabilities and mandates remediation timelines under BOD 22-01. A gap
+  of 30+ days indicates the device has exceeded reasonable remediation windows and represents
+  significant risk exposure to active exploitation.
+
+  Prerequisites: This query requires a Sentinel Watchlist named "CISA-KEV" populated with the CISA
+  KEV catalog CSV (https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv).
+  The CSV columns (cveID, vendorProject, product, vulnerabilityName, dateAdded, shortDescription,
+  requiredAction, dueDate, knownRansomwareCampaignUse) should be imported as-is.
+
+  Recommended Action: Prioritize patching of identified CVEs, especially those with
+  knownRansomwareCampaignUse = "Known". Cross-reference with asset criticality and accelerate
+  remediation on internet-exposed or privileged-access devices.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceTvmSoftwareVulnerabilities
+tactics:
+  - InitialAccess
+  - Execution
+  - PrivilegeEscalation
+relevantTechniques:
+  - T1190
+  - T1203
+  - T1068
+query: |
+  let LookbackDays = 30d;
+  // Load KEV catalog from Sentinel Watchlist - filter to entries added >30 days ago
+  let KEVCatalog = _GetWatchlist("CISA-KEV")
+      | extend DateAdded = todatetime(column_ifexists("dateAdded", ""))
+      | where DateAdded < ago(LookbackDays)
+      | project
+          CveID              = tostring(column_ifexists("cveID", "")),
+          DateAdded,
+          VendorProject      = tostring(column_ifexists("vendorProject", "")),
+          Product            = tostring(column_ifexists("product", "")),
+          VulnerabilityName  = tostring(column_ifexists("vulnerabilityName", "")),
+          RequiredAction     = tostring(column_ifexists("requiredAction", "")),
+          DueDate            = tostring(column_ifexists("dueDate", "")),
+          RansomwareCampaign = tostring(column_ifexists("knownRansomwareCampaignUse", ""));
+  // Join vulnerable devices against the KEV list
+  DeviceTvmSoftwareVulnerabilities
+  | join kind=inner KEVCatalog on $left.CveId == $right.CveID
+  | extend DaysUnremediated = datetime_diff('day', now(), DateAdded)
+  | extend RansomwareRisk = iff(RansomwareCampaign =~ "Known", "High", "Standard")
+  | project
+      DeviceName,
+      CveId,
+      VulnerabilityName,
+      VendorProject,
+      Product,
+      SoftwareName,
+      SoftwareVersion,
+      OSPlatform,
+      DateAdded,
+      DaysUnremediated,
+      DueDate,
+      RansomwareCampaign,
+      RansomwareRisk,
+      RecommendedSecurityUpdate
+  | order by RansomwareRisk asc, DaysUnremediated desc
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Vulnerability Management", "Security - Threat Intelligence" ]

@@ -1,0 +1,121 @@
+id: 8196a488-4aea-45e0-99e7-d84c5743ef0e
+name: KEV - Active Users on Devices with Unpatched Known Exploited Vulnerabilities Over 30 Days
+description: |
+  Correlates CISA Known Exploited Vulnerability (KEV) catalog entries older than 30 days against
+  devices in Microsoft Defender for Endpoint, then enriches the results with the users who are
+  currently or recently logged on to those devices. This identifies the specific users at risk from
+  unpatched KEVs and enables targeted security notifications, account monitoring, or priority
+  patch scheduling based on user role or privileges.
+
+  This multi-table query joins DeviceTvmSoftwareVulnerabilities (which devices are unpatched),
+  DeviceInfo (who is logged on), and optionally IdentityInfo for email and group context.
+  Results are ordered by KEV count and presence of ransomware-associated CVEs to surface
+  the highest-impact user-device pairs first.
+
+  Prerequisites: Requires a Sentinel Watchlist named "CISA-KEV" loaded with the CISA KEV CSV.
+  Requires Microsoft Defender for Endpoint (MicrosoftThreatProtection) connector with
+  DeviceTvmSoftwareVulnerabilities, DeviceInfo, and IdentityInfo data types enabled.
+
+  Recommended Action: Notify affected users and their managers of the vulnerability exposure.
+  Prioritize patching on devices belonging to privileged users (admins, finance, executives).
+  For devices with ransomware-linked KEVs, consider enhanced monitoring of user activity.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceTvmSoftwareVulnerabilities
+      - DeviceInfo
+      - IdentityInfo
+tactics:
+  - InitialAccess
+  - LateralMovement
+  - PrivilegeEscalation
+relevantTechniques:
+  - T1190
+  - T1210
+  - T1068
+query: |
+  let LookbackDays = 30d;
+  let DeviceInfoWindow = 1d;
+  // Load KEV entries older than 30 days from Watchlist
+  let KEVCatalog = _GetWatchlist("CISA-KEV")
+      | extend DateAdded = todatetime(column_ifexists("dateAdded", ""))
+      | where DateAdded < ago(LookbackDays)
+      | project
+          CveID              = tostring(column_ifexists("cveID", "")),
+          DateAdded,
+          VulnerabilityName  = tostring(column_ifexists("vulnerabilityName", "")),
+          VendorProject      = tostring(column_ifexists("vendorProject", "")),
+          Product            = tostring(column_ifexists("product", "")),
+          RansomwareCampaign = tostring(column_ifexists("knownRansomwareCampaignUse", ""));
+  // Summarize KEV exposure per device
+  let VulnerableDevices = DeviceTvmSoftwareVulnerabilities
+      | join kind=inner KEVCatalog on $left.CveId == $right.CveID
+      | extend DaysUnremediated = datetime_diff('day', now(), DateAdded)
+      | summarize
+          KEVCount          = dcount(CveId),
+          KEVs              = make_set(CveId, 50),
+          MaxDaysUnpatch    = max(DaysUnremediated),
+          HasRansomwareKEV  = max(iff(RansomwareCampaign =~ "Known", 1, 0)),
+          AffectedVendors   = make_set(VendorProject, 20)
+          by DeviceName;
+  // Get most recent logged-on users per device
+  let RecentDeviceUsers = DeviceInfo
+      | where TimeGenerated > ago(DeviceInfoWindow)
+      | summarize arg_max(TimeGenerated, *) by DeviceName
+      | mv-expand LoggedOnUser = todynamic(LoggedOnUsers)
+      | extend
+          UserName   = tostring(LoggedOnUser.UserName),
+          DomainName = tostring(LoggedOnUser.DomainName)
+      | where isnotempty(UserName)
+      | project DeviceName, UserName, DomainName, OSPlatform, OSVersion, PublicIP;
+  // Enrich with identity information (email, job title if available)
+  let UserIdentity = IdentityInfo
+      | summarize arg_max(TimeGenerated, *) by AccountName
+      | project
+          AccountName,
+          EmailAddress = tolower(AccountUpn),
+          Department,
+          JobTitle,
+          IsAccountEnabled;
+  // Join everything together
+  VulnerableDevices
+  | join kind=inner RecentDeviceUsers on DeviceName
+  | join kind=leftouter UserIdentity on $left.UserName == $right.AccountName
+  | project
+      DeviceName,
+      UserName,
+      DomainName,
+      EmailAddress,
+      Department,
+      JobTitle,
+      OSPlatform,
+      OSVersion,
+      KEVCount,
+      MaxDaysUnpatch,
+      HasRansomwareKEV,
+      AffectedVendors,
+      KEVs,
+      PublicIP
+  | extend RansomwareRisk = iff(HasRansomwareKEV == 1, "High", "Standard")
+  | order by HasRansomwareKEV desc, KEVCount desc, MaxDaysUnpatch desc
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: UserName
+      - identifier: UPNSuffix
+        columnName: DomainName
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Vulnerability Management", "Security - Threat Intelligence" ]

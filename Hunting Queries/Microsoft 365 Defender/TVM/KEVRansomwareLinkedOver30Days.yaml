@@ -1,0 +1,89 @@
+id: 45ce4727-cc75-4229-ae6b-dc80294dc99f
+name: KEV - Ransomware-Associated Known Exploited Vulnerabilities Older Than 30 Days
+description: |
+  Identifies devices with unpatched CVEs that CISA has flagged in the KEV catalog as actively used
+  in ransomware campaigns (knownRansomwareCampaignUse = "Known") AND where the vulnerability has
+  been in the KEV catalog for more than 30 days. This is the highest-priority subset of the KEV
+  catalog: these vulnerabilities are not only actively exploited in the wild but are specifically
+  tied to ransomware threat actors. Unpatched presence after 30 days represents critical exposure.
+
+  CISA's KEV catalog (https://www.cisa.gov/known-exploited-vulnerabilities-catalog) categorizes
+  each entry by known ransomware campaign use. This query surfaces the worst-case scenarios where
+  ransomware-enabling vulnerabilities remain unpatched well past reasonable remediation windows.
+
+  Prerequisites: Requires a Sentinel Watchlist named "CISA-KEV" loaded with the CISA KEV CSV.
+  Alternatively, swap the _GetWatchlist block for the externaldata() pattern from the live feed
+  variant of this query.
+
+  Recommended Action: Treat all results as critical findings requiring immediate escalation.
+  Isolate the most exposed systems, accelerate emergency patching, and verify whether any
+  exploitation activity has occurred via threat hunting in process and network telemetry.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceTvmSoftwareVulnerabilities
+      - DeviceTvmSoftwareVulnerabilitiesKB
+tactics:
+  - InitialAccess
+  - Impact
+relevantTechniques:
+  - T1190
+  - T1486
+query: |
+  let LookbackDays = 30d;
+  // Filter KEV catalog to ransomware-associated CVEs added more than 30 days ago
+  let RansomwareKEVs = _GetWatchlist("CISA-KEV")
+      | extend DateAdded = todatetime(column_ifexists("dateAdded", ""))
+      | where DateAdded < ago(LookbackDays)
+      | where column_ifexists("knownRansomwareCampaignUse", "") =~ "Known"
+      | project
+          CveID              = tostring(column_ifexists("cveID", "")),
+          DateAdded,
+          VendorProject      = tostring(column_ifexists("vendorProject", "")),
+          Product            = tostring(column_ifexists("product", "")),
+          VulnerabilityName  = tostring(column_ifexists("vulnerabilityName", "")),
+          RequiredAction     = tostring(column_ifexists("requiredAction", "")),
+          DueDate            = tostring(column_ifexists("dueDate", ""));
+  // Pull CVSS score from the KB table for severity context
+  let VulnKB = DeviceTvmSoftwareVulnerabilitiesKB
+      | project CveId, CvssScore, VulnerabilitySeverityLevel, IsExploitAvailable;
+  // Find devices still carrying these ransomware-linked KEVs
+  DeviceTvmSoftwareVulnerabilities
+  | join kind=inner RansomwareKEVs on $left.CveId == $right.CveID
+  | join kind=leftouter VulnKB on CveId
+  | extend DaysUnremediated = datetime_diff('day', now(), DateAdded)
+  | summarize
+      VulnCount        = dcount(CveId),
+      CVEs             = make_set(CveId, 50),
+      MaxDaysUnpatch   = max(DaysUnremediated),
+      MaxCvssScore     = max(CvssScore),
+      CriticalVulns    = countif(VulnerabilitySeverityLevel =~ "Critical"),
+      HighVulns        = countif(VulnerabilitySeverityLevel =~ "High")
+      by DeviceName, OSPlatform
+  | extend RiskScore = MaxCvssScore * log(MaxDaysUnpatch + 1)
+  | project
+      DeviceName,
+      OSPlatform,
+      VulnCount,
+      CriticalVulns,
+      HighVulns,
+      MaxCvssScore,
+      MaxDaysUnpatch,
+      RiskScore,
+      CVEs
+  | order by RiskScore desc
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Vulnerability Management", "Security - Threat Intelligence" ]

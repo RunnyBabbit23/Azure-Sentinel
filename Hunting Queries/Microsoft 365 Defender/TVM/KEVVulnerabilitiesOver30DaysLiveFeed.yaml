@@ -1,0 +1,97 @@
+id: a88077f5-4f0e-4952-b154-78e5ed8700e2
+name: KEV - Unpatched Known Exploited Vulnerabilities Older Than 30 Days (Live CISA Feed)
+description: |
+  Identifies devices with unpatched vulnerabilities listed in the CISA Known Exploited Vulnerabilities
+  (KEV) catalog where the vulnerability was added to the catalog more than 30 days ago. Unlike the
+  Watchlist variant of this query, this query fetches the KEV catalog directly from the CISA public
+  CSV feed at query time using KQL externaldata(), ensuring results always reflect the current KEV
+  catalog without requiring a separate data import process.
+
+  CISA's KEV catalog (https://www.cisa.gov/known-exploited-vulnerabilities-catalog) tracks actively
+  exploited CVEs and under BOD 22-01 mandates federal agencies remediate within defined windows.
+  A 30-day threshold is a reasonable benchmark for any organization. Vulnerabilities flagged with
+  knownRansomwareCampaignUse = "Known" are highest priority as they are actively leveraged in
+  ransomware attack chains.
+
+  Prerequisites: The Sentinel workspace must have outbound HTTPS access to
+  www.cisa.gov for the externaldata() call to succeed. Test with a manual query first.
+
+  Recommended Action: Prioritize patching of identified CVEs ordered by DaysUnremediated.
+  Cross-reference with asset criticality and accelerate remediation on internet-facing systems.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceTvmSoftwareVulnerabilities
+tactics:
+  - InitialAccess
+  - Execution
+  - PrivilegeEscalation
+relevantTechniques:
+  - T1190
+  - T1203
+  - T1068
+query: |
+  let LookbackDays = 30d;
+  // Pull the live CISA KEV catalog CSV directly at query time
+  let KEVFeed = externaldata(
+      cveID: string,
+      vendorProject: string,
+      product: string,
+      vulnerabilityName: string,
+      dateAdded: string,
+      shortDescription: string,
+      requiredAction: string,
+      dueDate: string,
+      knownRansomwareCampaignUse: string
+  )
+  [h@"https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv"]
+  with (format="csv", ignoreFirstRecord=true);
+  // Filter KEV entries added more than 30 days ago
+  let OldKEVs = KEVFeed
+      | extend DateAdded = todatetime(dateAdded)
+      | where DateAdded < ago(LookbackDays)
+      | project
+          cveID,
+          DateAdded,
+          vendorProject,
+          product,
+          vulnerabilityName,
+          requiredAction,
+          dueDate,
+          knownRansomwareCampaignUse;
+  // Match against devices with the vulnerability still present
+  DeviceTvmSoftwareVulnerabilities
+  | join kind=inner OldKEVs on $left.CveId == $right.cveID
+  | extend DaysUnremediated = datetime_diff('day', now(), DateAdded)
+  | extend RansomwareRisk = iff(knownRansomwareCampaignUse =~ "Known", "High", "Standard")
+  | project
+      DeviceName,
+      CveId,
+      vulnerabilityName,
+      vendorProject,
+      product,
+      SoftwareName,
+      SoftwareVersion,
+      OSPlatform,
+      DateAdded,
+      DaysUnremediated,
+      dueDate,
+      knownRansomwareCampaignUse,
+      RansomwareRisk,
+      RecommendedSecurityUpdate
+  | order by RansomwareRisk asc, DaysUnremediated desc
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Vulnerability Management", "Security - Threat Intelligence" ]
