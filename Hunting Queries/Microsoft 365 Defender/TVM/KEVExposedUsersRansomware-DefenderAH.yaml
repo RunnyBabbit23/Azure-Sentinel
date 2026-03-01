@@ -1,0 +1,181 @@
+id: e6816221-07af-45c2-b31d-63cd75624ac0
+name: KEV - Active Users on Devices with Ransomware-Linked KEVs Older Than 30 Days (Defender Advanced Hunting)
+description: |
+  Correlates ransomware-associated CISA KEV entries (older than 30 days) against devices in
+  Microsoft Defender for Endpoint, then enriches results with the users currently or recently
+  logged on to those devices. This surfaces the specific users most at risk from unpatched,
+  ransomware-enabling vulnerabilities and enables targeted notifications, priority patch scheduling,
+  or enhanced monitoring based on user role.
+
+  This query is optimized for Microsoft Defender Advanced Hunting. It embeds the 68 ransomware-
+  associated KEV entries added from 2024-01-01 through 2026-01-29 as a KQL datatable, then joins
+  against DeviceTvmSoftwareVulnerabilities and DeviceInfo. For older ransomware KEVs, use the
+  companion query KEVRansomwareLinkedOver30Days-DefenderAH.yaml.
+
+  Note: This datatable was generated from the CISA KEV catalog on 2026-03-01. Re-generate
+  periodically. The snapshot covers 68 ransomware-associated CVEs from 2024+.
+
+  Recommended Action: Notify affected users and their managers. Prioritize patching on devices
+  belonging to privileged users. Consider enhanced behavioural monitoring on user accounts associated
+  with devices that carry multiple ransomware-linked KEVs.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceTvmSoftwareVulnerabilities
+      - DeviceInfo
+      - IdentityInfo
+tactics:
+  - InitialAccess
+  - LateralMovement
+  - Impact
+relevantTechniques:
+  - T1190
+  - T1210
+  - T1486
+query: |
+  // Ransomware-associated CISA KEV entries from 2024-01-01 through 2026-01-29 (68 entries)
+  // Source: https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+  // Last updated: 2026-03-01 - re-generate periodically
+  let RansomwareKEVs = datatable(
+      CveID: string,
+      DateAdded: datetime,
+      VendorProject: string,
+      Product: string,
+      VulnerabilityName: string
+  )[
+      "CVE-2026-23760", datetime(2026-01-26), "SmarterTools", "SmarterMail", "SmarterTools SmarterMail Authentication Bypass Using an Alternate Path or Channe",
+      "CVE-2025-55182", datetime(2025-12-05), "Meta", "React Server Components", "Meta React Server Components Remote Code Execution Vulnerability",
+      "CVE-2025-61884", datetime(2025-10-20), "Oracle", "E-Business Suite", "Oracle E-Business Suite Server-Side Request Forgery (SSRF) Vulnerability",
+      "CVE-2025-61882", datetime(2025-10-06), "Oracle", "E-Business Suite", "Oracle E-Business Suite Unspecified Vulnerability",
+      "CVE-2025-10035", datetime(2025-09-29), "Fortra", "GoAnywhere MFT", "Fortra GoAnywhere MFT Deserialization of Untrusted Data Vulnerability",
+      "CVE-2025-49704", datetime(2025-07-22), "Microsoft", "SharePoint", "Microsoft SharePoint Code Injection Vulnerability",
+      "CVE-2025-49706", datetime(2025-07-22), "Microsoft", "SharePoint", "Microsoft SharePoint Improper Authentication Vulnerability",
+      "CVE-2025-53770", datetime(2025-07-20), "Microsoft", "SharePoint", "Microsoft SharePoint Deserialization of Untrusted Data Vulnerability",
+      "CVE-2025-5777", datetime(2025-07-10), "Citrix", "NetScaler ADC and Gateway", "Citrix NetScaler ADC and Gateway Out-of-Bounds Read Vulnerability",
+      "CVE-2019-6693", datetime(2025-06-25), "Fortinet", "FortiOS", "Fortinet FortiOS Use of Hard-Coded Credentials Vulnerability",
+      "CVE-2025-31324", datetime(2025-04-29), "SAP", "NetWeaver", "SAP NetWeaver Unrestricted File Upload Vulnerability",
+      "CVE-2025-29824", datetime(2025-04-08), "Microsoft", "Windows", "Microsoft Windows Common Log File System (CLFS) Driver Use-After-Free Vulnerabil",
+      "CVE-2025-31161", datetime(2025-04-07), "CrushFTP", "CrushFTP", "CrushFTP Authentication Bypass Vulnerability",
+      "CVE-2025-22457", datetime(2025-04-04), "Ivanti", "Connect Secure, Policy Secure, and ZTA Gateways", "Ivanti Connect Secure, Policy Secure, and ZTA Gateways Stack-Based Buffer Overfl",
+      "CVE-2025-24472", datetime(2025-03-18), "Fortinet", "FortiOS and FortiProxy", "Fortinet FortiOS and FortiProxy Authentication Bypass Vulnerability",
+      "CVE-2025-26633", datetime(2025-03-11), "Microsoft", "Windows", "Microsoft Windows Management Console (MMC) Improper Neutralization Vulnerability",
+      "CVE-2025-22225", datetime(2025-03-04), "VMware", "ESXi", "VMware ESXi Arbitrary Write Vulnerability",
+      "CVE-2018-8639", datetime(2025-03-03), "Microsoft", "Windows", "Microsoft Windows Win32k Improper Resource Shutdown or Release Vulnerability",
+      "CVE-2024-53704", datetime(2025-02-18), "SonicWall", "SonicOS", "SonicWall SonicOS SSLVPN Improper Authentication Vulnerability",
+      "CVE-2024-57727", datetime(2025-02-13), "SimpleHelp", "SimpleHelp", "SimpleHelp Path Traversal Vulnerability",
+      "CVE-2025-23006", datetime(2025-01-24), "SonicWall", "SMA1000 Appliances", "SonicWall SMA1000 Appliances Deserialization Vulnerability",
+      "CVE-2024-55591", datetime(2025-01-14), "Fortinet", "FortiOS and FortiProxy", "Fortinet FortiOS and FortiProxy Authentication Bypass Vulnerability",
+      "CVE-2023-48365", datetime(2025-01-13), "Qlik", "Sense", "Qlik Sense HTTP Tunneling Vulnerability",
+      "CVE-2025-0282", datetime(2025-01-08), "Ivanti", "Connect Secure, Policy Secure, and ZTA Gateways", "Ivanti Connect Secure, Policy Secure, and ZTA Gateways Stack-Based Buffer Overfl",
+      "CVE-2024-55550", datetime(2025-01-07), "Mitel", "MiCollab", "Mitel MiCollab Path Traversal Vulnerability",
+      "CVE-2024-41713", datetime(2025-01-07), "Mitel", "MiCollab", "Mitel MiCollab Path Traversal Vulnerability",
+      "CVE-2024-55956", datetime(2024-12-17), "Cleo", "Multiple Products", "Cleo Multiple Products Unauthenticated File Upload Vulnerability",
+      "CVE-2024-50623", datetime(2024-12-13), "Cleo", "Multiple Products", "Cleo Multiple Products Unrestricted File Upload Vulnerability",
+      "CVE-2024-51378", datetime(2024-12-04), "CyberPersons", "CyberPanel", "CyberPanel Incorrect Default Permissions Vulnerability",
+      "CVE-2024-11667", datetime(2024-12-03), "Zyxel", "Multiple Firewalls", "Zyxel Multiple Firewalls Path Traversal Vulnerability",
+      "CVE-2023-28461", datetime(2024-11-25), "Array Networks", "AG/vxAG ArrayOS", "Array Networks AG and vxAG ArrayOS Missing Authentication for Critical Function ",
+      "CVE-2024-9474", datetime(2024-11-18), "Palo Alto Networks", "PAN-OS", "Palo Alto Networks PAN-OS Management Interface OS Command Injection Vulnerabilit",
+      "CVE-2024-0012", datetime(2024-11-18), "Palo Alto Networks", "PAN-OS", "Palo Alto Networks PAN-OS Management Interface Authentication Bypass Vulnerabili",
+      "CVE-2024-49039", datetime(2024-11-12), "Microsoft", "Windows", "Microsoft Windows Task Scheduler Privilege Escalation Vulnerability",
+      "CVE-2024-51567", datetime(2024-11-07), "CyberPersons", "CyberPanel", "CyberPanel Incorrect Default Permissions Vulnerability",
+      "CVE-2024-38094", datetime(2024-10-22), "Microsoft", "SharePoint", "Microsoft SharePoint Deserialization Vulnerability",
+      "CVE-2024-40711", datetime(2024-10-17), "Veeam", "Backup & Replication", "Veeam Backup and Replication Deserialization Vulnerability",
+      "CVE-2024-9680", datetime(2024-10-15), "Mozilla", "Firefox", "Mozilla Firefox Use-After-Free Vulnerability",
+      "CVE-2024-30088", datetime(2024-10-15), "Microsoft", "Windows", "Microsoft Windows Kernel TOCTOU Race Condition Vulnerability",
+      "CVE-2024-6670", datetime(2024-09-16), "Progress", "WhatsUp Gold", "Progress WhatsUp Gold SQL Injection Vulnerability",
+      "CVE-2024-40766", datetime(2024-09-09), "SonicWall", "SonicOS", "SonicWall SonicOS Improper Access Control Vulnerability",
+      "CVE-2017-1000253", datetime(2024-09-09), "Linux", "Kernel", "Linux Kernel PIE Stack Buffer Corruption Vulnerability",
+      "CVE-2024-23897", datetime(2024-08-19), "Jenkins", "Jenkins Command Line Interface (CLI)", "Jenkins Command Line Interface (CLI) Path Traversal Vulnerability",
+      "CVE-2024-37085", datetime(2024-07-30), "VMware", "ESXi", "VMware ESXi Authentication Bypass Vulnerability",
+      "CVE-2024-26169", datetime(2024-06-13), "Microsoft", "Windows", "Microsoft Windows Error Reporting Service Improper Privilege Management Vulnerab",
+      "CVE-2024-4577", datetime(2024-06-12), "PHP Group", "PHP", "PHP-CGI OS Command Injection Vulnerability",
+      "CVE-2024-1086", datetime(2024-05-30), "Linux", "Kernel", "Linux Kernel Use-After-Free Vulnerability",
+      "CVE-2024-24919", datetime(2024-05-30), "Check Point", "Quantum Security Gateways", "Check Point Quantum Security Gateways Information Disclosure Vulnerability",
+      "CVE-2023-43208", datetime(2024-05-20), "NextGen Healthcare", "Mirth Connect", "NextGen Healthcare Mirth Connect Deserialization of Untrusted Data Vulnerability",
+      "CVE-2024-30051", datetime(2024-05-14), "Microsoft", "DWM Core Library", "Microsoft DWM Core Library Privilege Escalation Vulnerability",
+      "CVE-2024-3400", datetime(2024-04-12), "Palo Alto Networks", "PAN-OS", "Palo Alto Networks PAN-OS Command Injection Vulnerability",
+      "CVE-2023-24955", datetime(2024-03-26), "Microsoft", "SharePoint Server", "Microsoft SharePoint Server Code Injection Vulnerability",
+      "CVE-2021-44529", datetime(2024-03-25), "Ivanti", "Endpoint Manager Cloud Service Appliance (EPM CSA)", "Ivanti Endpoint Manager Cloud Service Appliance (EPM CSA) Code Injection Vulnera",
+      "CVE-2023-48788", datetime(2024-03-25), "Fortinet", "FortiClient EMS", "Fortinet FortiClient EMS SQL Injection Vulnerability",
+      "CVE-2024-27198", datetime(2024-03-07), "JetBrains", "TeamCity", "JetBrains TeamCity Authentication Bypass Vulnerability",
+      "CVE-2024-21338", datetime(2024-03-04), "Microsoft", "Windows", "Microsoft Windows Kernel Exposed IOCTL with Insufficient Access Control Vulnerab",
+      "CVE-2024-1709", datetime(2024-02-22), "ConnectWise", "ScreenConnect", "ConnectWise ScreenConnect Authentication Bypass Vulnerability",
+      "CVE-2020-3259", datetime(2024-02-15), "Cisco", "Adaptive Security Appliance (ASA) and Firepower Threat Defense (FTD)", "Cisco ASA and FTD Information Disclosure Vulnerability",
+      "CVE-2024-21412", datetime(2024-02-13), "Microsoft", "Windows", "Microsoft Windows Internet Shortcut Files Security Feature Bypass Vulnerability",
+      "CVE-2024-21762", datetime(2024-02-09), "Fortinet", "FortiOS", "Fortinet FortiOS Out-of-Bound Write Vulnerability",
+      "CVE-2024-21893", datetime(2024-01-31), "Ivanti", "Connect Secure, Policy Secure, and Neurons", "Ivanti Connect Secure, Policy Secure, and Neurons Server-Side Request Forgery (S",
+      "CVE-2023-22527", datetime(2024-01-24), "Atlassian", "Confluence Data Center and Server", "Atlassian Confluence Data Center and Server Template Injection Vulnerability",
+      "CVE-2023-35082", datetime(2024-01-18), "Ivanti", "Endpoint Manager Mobile (EPMM) and MobileIron Core", "Ivanti Endpoint Manager Mobile (EPMM) and MobileIron Core Authentication Bypass ",
+      "CVE-2023-29357", datetime(2024-01-10), "Microsoft", "SharePoint Server", "Microsoft SharePoint Server Privilege Escalation Vulnerability",
+      "CVE-2023-46805", datetime(2024-01-10), "Ivanti", "Connect Secure and Policy Secure", "Ivanti Connect Secure and Policy Secure Authentication Bypass Vulnerability",
+      "CVE-2024-21887", datetime(2024-01-10), "Ivanti", "Connect Secure and Policy Secure", "Ivanti Connect Secure and Policy Secure Command Injection Vulnerability",
+      "CVE-2023-29300", datetime(2024-01-08), "Adobe", "ColdFusion", "Adobe ColdFusion Deserialization of Untrusted Data Vulnerability",
+      "CVE-2023-38203", datetime(2024-01-08), "Adobe", "ColdFusion", "Adobe ColdFusion Deserialization of Untrusted Data Vulnerability"
+  ];
+  let LookbackDays = 30d;
+  let DeviceInfoWindow = 1d;
+  let OldRansomwareKEVs = RansomwareKEVs
+      | where DateAdded < ago(LookbackDays)
+      | extend DaysInKEV = datetime_diff('day', now(), DateAdded);
+  // Summarize KEV exposure per device
+  let VulnerableDevices = DeviceTvmSoftwareVulnerabilities
+      | join kind=inner OldRansomwareKEVs on $left.CveId == $right.CveID
+      | summarize
+          KEVCount        = dcount(CveId),
+          KEVs            = make_set(CveId, 50),
+          MaxDaysUnpatch  = max(DaysInKEV),
+          AffectedVendors = make_set(VendorProject, 20)
+          by DeviceName;
+  // Get most recently logged-on users per device
+  let RecentUsers = DeviceInfo
+      | where Timestamp > ago(DeviceInfoWindow)
+      | summarize arg_max(Timestamp, *) by DeviceName
+      | mv-expand LoggedOnUser = todynamic(LoggedOnUsers)
+      | extend
+          UserName   = tostring(LoggedOnUser.UserName),
+          DomainName = tostring(LoggedOnUser.DomainName)
+      | where isnotempty(UserName)
+      | project DeviceName, UserName, DomainName, OSPlatform, OSVersion, PublicIP;
+  // Enrich with identity details where available
+  let UserIdentity = IdentityInfo
+      | summarize arg_max(Timestamp, *) by AccountName
+      | project AccountName, EmailAddress = AccountUpn, Department, JobTitle;
+  VulnerableDevices
+  | join kind=inner RecentUsers on DeviceName
+  | join kind=leftouter UserIdentity on $left.UserName == $right.AccountName
+  | project
+      DeviceName,
+      UserName,
+      DomainName,
+      EmailAddress,
+      Department,
+      JobTitle,
+      OSPlatform,
+      OSVersion,
+      KEVCount,
+      MaxDaysUnpatch,
+      AffectedVendors,
+      KEVs,
+      PublicIP
+  | order by KEVCount desc, MaxDaysUnpatch desc
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: UserName
+      - identifier: UPNSuffix
+        columnName: DomainName
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Vulnerability Management", "Security - Threat Intelligence" ]
