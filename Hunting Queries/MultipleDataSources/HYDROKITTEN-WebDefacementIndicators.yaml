@@ -1,0 +1,143 @@
+id: 417b3e72-4a33-4cb7-8710-edb706b3cb17
+name: HYDRO KITTEN - Web Content Modification Indicative of HMI/Web Defacement
+description: |
+  Detects unusual creation or modification of web-served files on internet-facing systems,
+  consistent with HYDRO KITTEN's (CyberAv3ngers) documented tactic of defacing HMI display
+  panels on compromised Unitronics PLCs and internet-facing web servers. The group has
+  replaced legitimate HMI graphics with defacement images displaying anti-Israel messaging
+  and threat actor branding.
+
+  CISA Advisory AA23-335A documents defacement as a primary impact objective (MITRE T1491.001 -
+  Defacement: Internal Defacement). The group also renamed devices and modified ladder logic
+  to deny operator access (T1531 - Account Access Removal, T1565.001 - Stored Data Manipulation).
+
+  This query looks for two signals:
+  1. File write/modification events targeting web root paths or HMI display directories on
+     endpoints monitored by Microsoft Defender for Endpoint (DeviceFileEvents).
+  2. Anomalous HTTP PUT/POST responses to web root paths in IIS logs (W3CIISLog) that may
+     indicate unauthorized web content being written.
+
+  Also known as: CyberAv3ngers, Soldiers of Solomon, BAUXITE, IRGC-CEC Shahid Kaveh unit.
+
+  References:
+  - https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-335a
+  - https://attack.mitre.org/groups/G1027/
+  - https://attack.mitre.org/campaigns/C0031/
+
+  Recommended Action: Review the modified file contents immediately. Compare against known-good
+  backups. If a defacement image is found, the host is likely compromised — isolate, preserve
+  forensic state, and initiate incident response. Check whether the host is a PLC HMI,
+  SCADA web interface, or internet-facing web server.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceFileEvents
+  - connectorId: W3CIISLog
+    dataTypes:
+      - W3CIISLog
+tactics:
+  - Impact
+relevantTechniques:
+  - T1491.001
+  - T1531
+  - T1565.001
+query: |
+  let SearchWindow = 7d;
+  // Web root and HMI display paths associated with Unitronics and common web servers
+  let WebRootPatterns = dynamic([
+      "\\inetpub\\wwwroot\\",
+      "\\htdocs\\",
+      "\\www\\",
+      "\\public_html\\",
+      "\\webroot\\",
+      "/var/www/",
+      "/srv/www/",
+      "/usr/share/nginx/",
+      // Unitronics Vision HMI display paths
+      "\\UniApps\\",
+      "\\VisiLogic\\",
+      "\\UniLogic\\"
+  ]);
+  // Image file types used in defacement (HYDRO KITTEN used PNG/JPG defacement images)
+  let DefacementExtensions = dynamic([
+      ".html", ".htm", ".php", ".asp", ".aspx",
+      ".png", ".jpg", ".jpeg", ".gif", ".svg",
+      ".js", ".css"
+  ]);
+  // Processes that should NOT be writing to web roots (flag non-standard writers)
+  let LegitWebProcesses = dynamic([
+      "w3wp.exe", "httpd.exe", "nginx.exe", "php-cgi.exe", "php.exe",
+      "msdeploy.exe", "robocopy.exe", "xcopy.exe", "git.exe"
+  ]);
+  let FileEventResults = (
+      DeviceFileEvents
+      | where TimeGenerated > ago(SearchWindow)
+      | where ActionType in ("FileCreated", "FileModified", "FileRenamed")
+      | where FolderPath has_any (WebRootPatterns)
+      | where FileName has_any (DefacementExtensions)
+      | extend IsUnexpectedWriter = iff(
+          not(InitiatingProcessFileName in~ (LegitWebProcesses)), true, false)
+      | project
+          TimeGenerated,
+          DeviceName,
+          AccountName          = InitiatingProcessAccountName,
+          ActionType,
+          FileName,
+          FolderPath,
+          WriterProcess        = InitiatingProcessFileName,
+          WriterCommandLine    = InitiatingProcessCommandLine,
+          IsUnexpectedWriter,
+          DataSource           = "DeviceFileEvents"
+  );
+  let IISResults = (
+      W3CIISLog
+      | where TimeGenerated > ago(SearchWindow)
+      // Flag PUT requests (file upload) and POST to web directories with 200/201 success
+      | where csMethod in ("PUT", "POST")
+      | where scStatus in (200, 201)
+      | where csUriStem has_any ("/upload", "/admin", "/manager", "/content", ".php", ".asp")
+      | project
+          TimeGenerated,
+          DeviceName       = Computer,
+          AccountName      = csUsername,
+          ActionType       = strcat("HTTP ", csMethod, " -> ", tostring(scStatus)),
+          FileName         = tostring(split(csUriStem, "/")[-1]),
+          FolderPath       = csUriStem,
+          WriterProcess    = csUserAgent,
+          WriterCommandLine = strcat(csMethod, " ", csUriStem, " from ", cIP),
+          IsUnexpectedWriter = true,
+          DataSource       = "W3CIISLog"
+  );
+  union FileEventResults, IISResults
+  | where IsUnexpectedWriter == true
+  | summarize
+      EventCount     = count(),
+      FirstSeen      = min(TimeGenerated),
+      LastSeen       = max(TimeGenerated),
+      Files          = make_set(FileName, 20),
+      Paths          = make_set(FolderPath, 10),
+      Writers        = make_set(WriterProcess),
+      Accounts       = make_set(AccountName),
+      Actions        = make_set(ActionType)
+      by DeviceName, DataSource
+  | extend RiskNote = "Non-standard process writing to web/HMI directory — review for defacement content"
+  | order by EventCount desc
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: Accounts
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Threat Intelligence", "Security - Other" ]

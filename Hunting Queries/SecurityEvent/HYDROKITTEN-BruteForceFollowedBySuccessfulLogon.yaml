@@ -1,0 +1,125 @@
+id: cda7b5c0-c470-4ab5-b1b5-5dc520c34e65
+name: HYDRO KITTEN - Brute Force Followed by Successful Logon (Default Credential Pattern)
+description: |
+  Detects the pattern of multiple failed logon attempts (EventID 4625) from a single external
+  source IP followed by a successful logon (EventID 4624) within a short window. This is
+  consistent with HYDRO KITTEN's (CyberAv3ngers) documented technique of using default
+  passwords such as '1111' and brute forcing exposed systems to gain access.
+
+  CISA Advisory AA23-335A documents that the group exploited Unitronics PLCs with default
+  or absent passwords (MITRE T1110 - Brute Force, T1078.001 - Valid Accounts: Default
+  Accounts). The same credential access pattern applies to any internet-exposed Windows
+  system or remote access service running default or weak credentials.
+
+  A threshold of 5+ failures before success is used; tune FailureThreshold to match your
+  environment's baseline. Logon Type 3 (Network) and Type 10 (RemoteInteractive/RDP) are
+  prioritized as these represent the external-facing attack surface relevant to HYDRO KITTEN.
+
+  Also known as: CyberAv3ngers, Soldiers of Solomon, BAUXITE, IRGC-CEC Shahid Kaveh unit.
+
+  References:
+  - https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-335a
+  - https://attack.mitre.org/groups/G1027/
+
+  Recommended Action: Verify whether the successful logon account is legitimate. Review
+  what actions were taken post-authentication. If on an OT-adjacent or internet-exposed
+  system, treat as a potential HYDRO KITTEN initial access and escalate immediately.
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - SecurityEvent
+tactics:
+  - CredentialAccess
+  - InitialAccess
+relevantTechniques:
+  - T1110
+  - T1110.001
+  - T1078.001
+query: |
+  let LookbackWindow  = 1h;    // Time window to correlate failures with success
+  let FailureThreshold = 5;    // Minimum failed attempts before success to flag
+  let SearchWindow    = 7d;
+  // Logon types of interest: 3=Network, 10=RemoteInteractive(RDP), 8=NetworkCleartext
+  let RelevantLogonTypes = dynamic([3, 8, 10]);
+  // Failed logon events (4625)
+  let Failures = SecurityEvent
+      | where TimeGenerated > ago(SearchWindow)
+      | where EventID == 4625
+      | where LogonType in (RelevantLogonTypes)
+      | where AccountType !~ "Machine"
+      | where IpAddress !in ("127.0.0.1", "::1", "-")
+      | where IpAddress !startswith "10."
+          and IpAddress !startswith "192.168."
+          and not(IpAddress matches regex @"^172\.(1[6-9]|2[0-9]|3[0-1])\.")
+      | project
+          FailTime       = TimeGenerated,
+          Computer,
+          IpAddress,
+          TargetAccount  = TargetUserName,
+          LogonType,
+          SubStatus;
+  // Successful logon events (4624)
+  let Successes = SecurityEvent
+      | where TimeGenerated > ago(SearchWindow)
+      | where EventID == 4624
+      | where LogonType in (RelevantLogonTypes)
+      | where AccountType !~ "Machine"
+      | where IpAddress !in ("127.0.0.1", "::1", "-")
+      | where IpAddress !startswith "10."
+          and IpAddress !startswith "192.168."
+          and not(IpAddress matches regex @"^172\.(1[6-9]|2[0-9]|3[0-1])\.")
+      | project
+          SuccessTime    = TimeGenerated,
+          Computer,
+          IpAddress,
+          TargetAccount  = TargetUserName,
+          LogonType;
+  // Find sources that had failures then a success
+  Failures
+  | join kind=inner Successes
+      on IpAddress, Computer, TargetAccount
+  | where SuccessTime > FailTime
+      and SuccessTime < FailTime + LookbackWindow
+  | summarize
+      FailureCount    = dcount(FailTime),
+      FirstFailure    = min(FailTime),
+      SuccessTime     = min(SuccessTime),
+      TargetAccounts  = make_set(TargetAccount, 10),
+      LogonTypes      = make_set(LogonType)
+      by IpAddress, Computer
+  | where FailureCount >= FailureThreshold
+  | extend MinutesToSuccess = datetime_diff('minute', SuccessTime, FirstFailure)
+  | extend
+      DefaultCredRisk = iff(FailureCount between (5 .. 20),
+          "High - Low attempt count suggests default password, not exhaustive brute force",
+          "Medium - High volume brute force pattern")
+  | project
+      Computer,
+      IpAddress,
+      FailureCount,
+      FirstFailure,
+      SuccessTime,
+      MinutesToSuccess,
+      TargetAccounts,
+      LogonTypes,
+      DefaultCredRisk
+  | order by FailureCount asc  // Low count first — most consistent with default password use
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: Computer
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: IpAddress
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Threat Intelligence", "Security - Other" ]

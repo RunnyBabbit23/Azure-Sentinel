@@ -1,0 +1,95 @@
+id: 07d8cff5-c8e4-4ece-8889-44ddb0b79a38
+name: HYDRO KITTEN - Inbound Connections to Unitronics PLC Ports
+description: |
+  Detects inbound network connections to Unitronics Vision Series PLC default communication ports
+  TCP 20256 and TCP 20257 from external (non-RFC-1918) source addresses. HYDRO KITTEN
+  (CrowdStrike designation), also tracked as CyberAv3ngers and assessed as an IRGC-CEC-affiliated
+  actor, exploited default and absent passwords on internet-exposed Unitronics PLCs to compromise
+  at least 75 devices across water, wastewater, energy, food/beverage, and healthcare sectors
+  between November 2023 and January 2024 (CISA Advisory AA23-335A).
+
+  The group uses port 20256 (Unitronics PCOM protocol default) for initial access and was
+  observed changing devices to port 20257 to prevent owner re-access after compromise. Any
+  inbound traffic to these ports from external IP space warrants immediate investigation as
+  Unitronics PLCs should never be directly internet-accessible.
+
+  Also known as: CyberAv3ngers, Soldiers of Solomon, BAUXITE, mr_soul0, Cyber Av3ngers,
+  SoldiersOfSolomon, Mr.Soul, mrsoul_group.
+
+  References:
+  - https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-335a
+  - https://attack.mitre.org/groups/G1027/
+  - https://www.crowdstrike.com/en-us/adversaries/hydro-kitten/
+
+  Recommended Action: Immediately isolate any device receiving traffic on these ports from
+  external sources. Verify whether the device is a legitimate Unitronics PLC or HMI. If so,
+  remove it from internet exposure, change all passwords from defaults, and review ladder
+  logic for unauthorized modifications.
+requiredDataConnectors:
+  - connectorId: AzureFirewall
+    dataTypes:
+      - AzureDiagnostics
+  - connectorId: CommonSecurityLog
+    dataTypes:
+      - CommonSecurityLog
+tactics:
+  - InitialAccess
+relevantTechniques:
+  - T1190
+  - T1133
+query: |
+  // RFC-1918 private address ranges — exclude these from SourceIP to focus on external traffic
+  let PrivateRanges = dynamic(["10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.",
+      "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.",
+      "172.29.", "172.30.", "172.31.", "192.168."]);
+  // Unitronics PCOM protocol ports — default (20256) and post-compromise renamed (20257)
+  let UnitronicsPorts = dynamic([20256, 20257]);
+  let Results = (
+      // Azure Firewall logs
+      AzureDiagnostics
+      | where Category in ("AzureFirewallNetworkRule", "AzureFirewallApplicationRule")
+      | where OperationName == "AzureFirewallNetworkRuleLog"
+      | extend
+          SourceIP   = tostring(split(msg_s, " ")[3]),
+          DestPort   = toint(extract(@":(\d+)\.", 1, tostring(split(msg_s, "->")[1]))),
+          Protocol   = tostring(split(msg_s, " ")[0]),
+          Action     = tostring(split(msg_s, " ")[toint(array_length(split(msg_s, " "))-1)])
+      | where DestPort in (UnitronicsPorts)
+      | where not(SourceIP has_any (PrivateRanges))
+      | project TimeGenerated, SourceIP, DestPort, Protocol, Action, DataSource="AzureFirewall"
+  )
+  | union (
+      // CEF/Syslog from perimeter firewalls and network devices
+      CommonSecurityLog
+      | where DestinationPort in (UnitronicsPorts)
+      | extend SourceIP = SourceIP
+      | where not(SourceIP has_any (PrivateRanges))
+      | project TimeGenerated, SourceIP, DestPort=DestinationPort,
+                Protocol=Protocol, Action=DeviceAction, DataSource="CommonSecurityLog"
+  )
+  | extend IsKnownRenamePort = iff(DestPort == 20257,
+      "High - Port 20257 indicates post-compromise device rename by HYDRO KITTEN", "")
+  | extend Severity = iff(DestPort == 20257, "High", "Medium")
+  | summarize
+      ConnectionCount = count(),
+      FirstSeen       = min(TimeGenerated),
+      LastSeen        = max(TimeGenerated),
+      Ports           = make_set(DestPort),
+      Actions         = make_set(Action)
+      by SourceIP, DataSource, Severity, IsKnownRenamePort
+  | order by Severity asc, ConnectionCount desc
+entityMappings:
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: SourceIP
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Threat Intelligence", "Security - Network" ]

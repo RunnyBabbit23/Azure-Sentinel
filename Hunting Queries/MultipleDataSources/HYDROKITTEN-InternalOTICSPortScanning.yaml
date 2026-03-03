@@ -1,0 +1,136 @@
+id: 6586a415-3044-4542-ae31-a0e92fabe1ef
+name: HYDRO KITTEN - Internal Network Scanning for OT/ICS Service Ports
+description: |
+  Detects internal hosts scanning for ports commonly associated with OT/ICS/SCADA protocols.
+  Post-compromise lateral movement and asset discovery targeting industrial control systems is
+  consistent with HYDRO KITTEN's (CyberAv3ngers) focus on critical infrastructure disruption.
+  An internal host probing multiple OT protocol ports across multiple destinations indicates
+  active enumeration of the OT/IT boundary.
+
+  OT/ICS ports monitored:
+    - 20256 / 20257 : Unitronics Vision Series PCOM (primary HYDRO KITTEN target)
+    - 502           : Modbus TCP
+    - 102           : Siemens S7 / ISO-TSAP
+    - 44818         : EtherNet/IP (Rockwell/Allen-Bradley)
+    - 2404          : IEC 60870-5-104 (power grid SCADA)
+    - 20000         : DNP3 (electric utilities, water treatment)
+    - 4840          : OPC-UA (universal OT communication)
+    - 1089-1091     : OPC-DA (legacy)
+    - 34964         : PROFINET DCP
+    - 47808         : BACnet (building automation)
+
+  Also known as: CyberAv3ngers, Soldiers of Solomon, BAUXITE, IRGC-CEC Shahid Kaveh unit.
+
+  References:
+  - https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-335a
+  - https://attack.mitre.org/groups/G1027/
+  - https://attack.mitre.org/techniques/T1046/
+
+  Recommended Action: Identify the scanning host and whether it is an IT or OT asset.
+  Determine whether scanning was performed by a legitimate network management tool.
+  If not, treat as post-compromise lateral movement toward OT assets and isolate immediately.
+requiredDataConnectors:
+  - connectorId: AzureFirewall
+    dataTypes:
+      - AzureDiagnostics
+  - connectorId: CommonSecurityLog
+    dataTypes:
+      - CommonSecurityLog
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceNetworkEvents
+tactics:
+  - Discovery
+  - LateralMovement
+relevantTechniques:
+  - T1046
+  - T1210
+query: |
+  let OTICSSPorts = dynamic([
+      20256,  // Unitronics PCOM (HYDRO KITTEN primary target)
+      20257,  // Unitronics PCOM post-compromise renamed port
+      502,    // Modbus TCP
+      102,    // Siemens S7 / ISO-TSAP
+      44818,  // EtherNet/IP
+      2404,   // IEC 60870-5-104
+      20000,  // DNP3
+      4840,   // OPC-UA
+      1089,   // OPC-DA
+      1090,   // OPC-DA
+      1091,   // OPC-DA
+      34964,  // PROFINET DCP
+      47808   // BACnet
+  ]);
+  // Minimum distinct destinations to qualify as scanning (not just legitimate single-device comms)
+  let ScanThreshold = 3;
+  let SearchWindow  = 7d;
+  let MTPResults = (
+      DeviceNetworkEvents
+      | where TimeGenerated > ago(SearchWindow)
+      | where RemotePort in (OTICSSPorts)
+      | project
+          TimeGenerated,
+          SourceHost   = DeviceName,
+          SourceIP     = LocalIP,
+          DestIP       = RemoteIP,
+          DestPort     = RemotePort,
+          InitProcess  = InitiatingProcessFileName,
+          CommandLine  = InitiatingProcessCommandLine,
+          DataSource   = "DeviceNetworkEvents"
+  );
+  let CSLResults = (
+      CommonSecurityLog
+      | where TimeGenerated > ago(SearchWindow)
+      | where DestinationPort in (OTICSSPorts)
+      | project
+          TimeGenerated,
+          SourceHost   = SourceHostName,
+          SourceIP     = SourceIP,
+          DestIP       = DestinationIP,
+          DestPort     = DestinationPort,
+          InitProcess  = ApplicationProtocol,
+          CommandLine  = RequestURL,
+          DataSource   = "CommonSecurityLog"
+  );
+  union MTPResults, CSLResults
+  | summarize
+      ScanCount        = count(),
+      UniqueDestIPs    = dcount(DestIP),
+      DestIPs          = make_set(DestIP, 20),
+      PortsScanned     = make_set(DestPort),
+      FirstSeen        = min(TimeGenerated),
+      LastSeen         = max(TimeGenerated),
+      Processes        = make_set(InitProcess)
+      by SourceHost, SourceIP, DataSource
+  | where UniqueDestIPs >= ScanThreshold
+  | extend UnitronicsTargeted = iff(PortsScanned has_any ("20256", "20257"),
+      "Yes — Unitronics PCOM port targeted (primary HYDRO KITTEN vector)", "No")
+  | extend RiskLevel = case(
+      UnitronicsTargeted == "Yes — Unitronics PCOM port targeted (primary HYDRO KITTEN vector)", "Critical",
+      UniqueDestIPs >= 10, "High",
+      UniqueDestIPs >= 5,  "Medium",
+                           "Low"
+  )
+  | project
+      SourceHost, SourceIP, RiskLevel, UniqueDestIPs, ScanCount,
+      PortsScanned, UnitronicsTargeted, Processes, FirstSeen, LastSeen, DestIPs, DataSource
+  | order by RiskLevel asc, UniqueDestIPs desc
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: SourceHost
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: SourceIP
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Threat Intelligence", "Security - Network" ]

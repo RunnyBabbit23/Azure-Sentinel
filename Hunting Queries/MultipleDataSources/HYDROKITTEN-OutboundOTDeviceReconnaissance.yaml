@@ -1,0 +1,119 @@
+id: 0a26363f-ae49-4837-a7bc-8fd99ce88a87
+name: HYDRO KITTEN - Outbound Reconnaissance to OT/ICS Device Discovery Services
+description: |
+  Detects internal hosts making connections to known internet-scanning and OT/ICS device
+  discovery services used by HYDRO KITTEN (CyberAv3ngers) to enumerate internet-exposed
+  Unitronics PLCs and other industrial control systems before conducting targeted attacks.
+
+  CISA Advisory AA23-335A and open-source reporting document that HYDRO KITTEN used services
+  such as Shodan and Censys to identify internet-accessible Unitronics Vision Series PLCs
+  running on default port TCP 20256 prior to the 2023-2024 critical infrastructure campaign.
+  Internal hosts querying these services may indicate an insider threat, a compromised host
+  being used for pre-attack reconnaissance, or unauthorized OT asset enumeration activity.
+
+  Services monitored: Shodan, Censys, FOFA, ZoomEye, Greynoise, BinaryEdge, Onyphe, Netlas.
+
+  Also known as: CyberAv3ngers, Soldiers of Solomon, BAUXITE, IRGC-CEC Shahid Kaveh unit.
+
+  References:
+  - https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-335a
+  - https://attack.mitre.org/groups/G1027/
+
+  Recommended Action: Investigate the initiating host and user account. Determine whether
+  queries targeted ICS/OT-related search terms (Unitronics, PCOM, HMI, SCADA). Review
+  browser history or process command-line context for search strings submitted.
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceNetworkEvents
+  - connectorId: CommonSecurityLog
+    dataTypes:
+      - CommonSecurityLog
+tactics:
+  - Reconnaissance
+relevantTechniques:
+  - T1596
+  - T1595.002
+query: |
+  // OT/ICS device discovery and internet scanning services used by HYDRO KITTEN
+  let OTDiscoveryServices = dynamic([
+      "shodan.io", "www.shodan.io", "api.shodan.io", "exploits.shodan.io",
+      "censys.io", "search.censys.io", "api.censys.io",
+      "fofa.info", "en.fofa.info", "fofa.so",
+      "zoomeye.org", "www.zoomeye.org", "api.zoomeye.org",
+      "greynoise.io", "api.greynoise.io", "viz.greynoise.io",
+      "binaryedge.io", "api.binaryedge.io", "app.binaryedge.io",
+      "onyphe.io", "www.onyphe.io", "api.onyphe.io",
+      "netlas.io", "app.netlas.io"
+  ]);
+  let Results = (
+      // MDE telemetry from endpoints
+      DeviceNetworkEvents
+      | where TimeGenerated > ago(7d)
+      | where RemoteUrl has_any (OTDiscoveryServices)
+          or RemoteIPType != "Private" and RemoteUrl has_any (OTDiscoveryServices)
+      | project
+          TimeGenerated,
+          DeviceName,
+          AccountName = InitiatingProcessAccountName,
+          ProcessName = InitiatingProcessFileName,
+          CommandLine = InitiatingProcessCommandLine,
+          RemoteUrl,
+          RemoteIP,
+          DataSource = "DeviceNetworkEvents"
+  )
+  | union (
+      // Perimeter firewall/proxy logs via CEF
+      CommonSecurityLog
+      | where TimeGenerated > ago(7d)
+      | where RequestURL has_any (OTDiscoveryServices)
+          or DestinationHostName has_any (OTDiscoveryServices)
+      | project
+          TimeGenerated,
+          DeviceName      = SourceHostName,
+          AccountName     = SourceUserName,
+          ProcessName     = ApplicationProtocol,
+          CommandLine     = RequestURL,
+          RemoteUrl       = DestinationHostName,
+          RemoteIP        = DestinationIP,
+          DataSource      = "CommonSecurityLog"
+  )
+  | extend ServiceQueried = case(
+      RemoteUrl has "shodan",      "Shodan",
+      RemoteUrl has "censys",      "Censys",
+      RemoteUrl has "fofa",        "FOFA",
+      RemoteUrl has "zoomeye",     "ZoomEye",
+      RemoteUrl has "greynoise",   "GreyNoise",
+      RemoteUrl has "binaryedge",  "BinaryEdge",
+      RemoteUrl has "onyphe",      "Onyphe",
+      RemoteUrl has "netlas",      "Netlas",
+                                   "Unknown"
+  )
+  | summarize
+      QueryCount  = count(),
+      FirstSeen   = min(TimeGenerated),
+      LastSeen    = max(TimeGenerated),
+      Services    = make_set(ServiceQueried),
+      Processes   = make_set(ProcessName),
+      RemoteURLs  = make_set(RemoteUrl, 20)
+      by DeviceName, AccountName, DataSource
+  | order by QueryCount desc
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: DeviceName
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: AccountName
+version: 1.0.0
+metadata:
+  source:
+    kind: Community
+  author:
+    name: Community
+  support:
+    tier: Community
+  categories:
+    domains: [ "Security - Threat Intelligence", "Security - Network" ]
